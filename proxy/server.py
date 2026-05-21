@@ -1665,6 +1665,12 @@ async def shutdown():
     await http_client.aclose()
 
 
+@app.get("/healthz")
+async def healthz():
+    """容器 healthcheck 端点：仅校验进程能响应，不依赖外部 service。"""
+    return {"status": "ok"}
+
+
 # ═══ Tavily 代理端点 ═══
 
 async def _execute_qwen_fallback(token_row, body):
