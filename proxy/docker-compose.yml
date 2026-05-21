@@ -1,10 +1,27 @@
 services:
   mysearch-proxy:
-    build: .
+    image: ghcr.io/chenp0401/mysearch-proxy:latest
+    container_name: mysearch-proxy
+    pull_policy: always
+    restart: unless-stopped
+    # 仅绑回环：宿主机上的 host-mode Caddy 通过 127.0.0.1:9874 反代，
+    # 不暴露公网，无需 host.docker.internal。
     ports:
-      - "9874:9874"
-    environment:
-      - ADMIN_PASSWORD=change-me
+      - "127.0.0.1:9874:9874"
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data
-    restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9874/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

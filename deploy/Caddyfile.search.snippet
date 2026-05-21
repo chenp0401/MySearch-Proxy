@@ -1,0 +1,41 @@
+# =============================================================================
+# Caddy 片段：search.uctest.cn -> mysearch-proxy
+#
+# 部署位置：东京 LH 服务器上的 Caddy 容器（host network 模式）
+# 现网 Caddyfile 实际路径：/root/.openclaw/searxng/Caddyfile
+#
+# 把下面整段追加到现有 Caddyfile 末尾，然后在宿主机执行：
+#   docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+#
+# 证书走 certimate 手签流派（与 api.uctest.cn 保持一致）：
+#   1) 在 certimate 平台为 search.uctest.cn 申请证书
+#   2) 部署目标设为本机 /etc/ssl/certimate/，文件名：
+#        /etc/ssl/certimate/search.uctest.cn.crt
+#        /etc/ssl/certimate/search.uctest.cn.key
+#   3) Caddy 容器已挂载 /etc/ssl/certimate -> /etc/ssl/certimate，无需额外挂载
+# =============================================================================
+
+# MySearch Proxy - search.uctest.cn (certimate 手签证书)
+search.uctest.cn {
+    tls /etc/ssl/certimate/search.uctest.cn.crt /etc/ssl/certimate/search.uctest.cn.key
+    encode zstd gzip
+
+    # mysearch-proxy 容器绑 127.0.0.1:9874，host-mode Caddy 直接走 loopback。
+    reverse_proxy 127.0.0.1:9874 {
+        # 透传真实客户端 IP（Caddy 全局已配 trusted_proxies，这里只补 header）
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+}
+
+# 可选：HTTP -> HTTPS 强制跳转（与 api.uctest.cn 同风格）
+http://search.uctest.cn {
+    redir https://search.uctest.cn{uri} permanent
+}
