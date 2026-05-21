@@ -107,6 +107,7 @@ SERVICE_LABELS = {
     "tavily": "Tavily",
     "firecrawl": "Firecrawl",
     "exa": "Exa",
+    "qwen": "Qwen",
     "mysearch": "MySearch",
 }
 
@@ -2049,9 +2050,9 @@ async def proxy_social_search(request: Request):
 @app.get("/", response_class=HTMLResponse)
 async def console(request: Request):
     return templates.TemplateResponse(
+        request,
         "console.html",
         {
-            "request": request,
             "base_url": str(request.base_url).rstrip("/"),
             "initial_authenticated": has_valid_admin_session(request),
         },
