@@ -507,6 +507,59 @@ class MySearchClientTests(unittest.TestCase):
 
         self.assertEqual(decision.provider, "firecrawl")
 
+    def test_search_qwen_explicit_provider_returns_normalized_results(self) -> None:
+        """``provider="qwen"`` 应走 _search_qwen 分支并返回标准化结果。"""
+        from mysearch.keyring import KeyRecord
+
+        client = MySearchClient()
+        # 注入一把假 qwen key，避免 _get_key_or_raise 抛"未配置"。
+        fake_key = KeyRecord(
+            provider="qwen",
+            key="sk-fake-qwen-key-for-tests",
+            source="env",
+            label="qwen:env:1",
+        )
+        client.keyring._keys["qwen"] = [fake_key]  # type: ignore[attr-defined]
+
+        captured: dict[str, object] = {}
+
+        def fake_request_json(**kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            return {
+                "request_id": "req-1",
+                "output": {
+                    "choices": [
+                        {"message": {"content": "Qwen 给出的中文摘要答案。"}}
+                    ],
+                    "search_results": [
+                        {
+                            "title": "通义千问官网",
+                            "url": "https://qianwen.aliyun.com",
+                            "content": "通义千问介绍页面正文。",
+                        }
+                    ],
+                },
+            }
+
+        client._request_json = fake_request_json  # type: ignore[method-assign]
+
+        result = client.search(query="通义千问 是什么", provider="qwen")
+
+        self.assertEqual(result["provider"], "qwen")
+        self.assertEqual(result["answer"], "Qwen 给出的中文摘要答案。")
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["url"], "https://qianwen.aliyun.com")
+        self.assertEqual(result["results"][0]["provider"], "qwen")
+        # 校验 _request_json 被传入了 qwen ProviderConfig
+        self.assertIs(captured["provider"], client.config.qwen)
+        # 校验请求体里包含 enable_search=True 和正确 query
+        payload = captured["payload"]
+        self.assertTrue(payload["parameters"]["enable_search"])  # type: ignore[index]
+        self.assertEqual(
+            payload["input"]["messages"][0]["content"],  # type: ignore[index]
+            "通义千问 是什么",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 from mysearch.config import MySearchConfig, ProviderConfig
 from mysearch.keyring import MySearchKeyRing
+from mysearch.providers import qwen as qwen_provider
 
 
 SearchMode = Literal["auto", "web", "news", "social", "docs", "research", "github", "pdf"]
@@ -41,7 +42,7 @@ ResolvedSearchIntent = Literal[
     "resource",
 ]
 SearchStrategy = Literal["auto", "fast", "balanced", "verify", "deep"]
-ProviderName = Literal["auto", "tavily", "firecrawl", "exa", "xai"]
+ProviderName = Literal["auto", "tavily", "firecrawl", "exa", "xai", "qwen"]
 
 
 class MySearchError(RuntimeError):
@@ -137,6 +138,7 @@ class MySearchClient:
             ),
             "exa": self._describe_provider(self.config.exa, keyring_info["exa"]),
             "xai": self._describe_provider(self.config.xai, keyring_info["xai"]),
+            "qwen": self._describe_provider(self.config.qwen, keyring_info["qwen"]),
         }
         return {
             "server_name": self.config.server_name,
@@ -591,7 +593,7 @@ class MySearchClient:
                 include_domains=include_domains,
                 exclude_domains=exclude_domains,
             )
-        elif decision.provider in ("tavily", "firecrawl", "exa"):
+        elif decision.provider in ("tavily", "firecrawl", "exa", "qwen"):
             result, fallback_info = self._search_with_fallback(
                 primary_provider=decision.provider,
                 query=query,
@@ -996,6 +998,11 @@ class MySearchClient:
                     reason="显式指定 xAI/X 搜索",
                     sources=normalized_sources,
                 )
+            if provider == "qwen":
+                return RouteDecision(
+                    provider="qwen",
+                    reason="显式指定 Qwen / DashScope 搜索",
+                )
 
         if normalized_sources == ["web", "x"] or (
             "x" in normalized_sources and "web" in normalized_sources
@@ -1324,6 +1331,11 @@ class MySearchClient:
                 include_domains=include_domains,
                 exclude_domains=exclude_domains,
                 include_content=include_content,
+            )
+        if provider_name == "qwen":
+            return self._search_qwen(
+                query=query,
+                max_results=max_results,
             )
         raise MySearchError(f"Unknown provider: {provider_name}")
 
@@ -1884,6 +1896,54 @@ class MySearchClient:
                 for item in results
                 if item.get("url")
             ],
+        }
+
+    def _search_qwen(
+        self,
+        *,
+        query: str,
+        max_results: int,
+    ) -> dict[str, Any]:
+        """显式 Qwen / DashScope 搜索分支。
+
+        通义把 web search 挂在文本生成接口下，请求体由
+        ``mysearch.providers.qwen.build_qwen_request`` 构造，响应由
+        ``normalize_qwen_results`` 归一化为 MySearch 标准 schema。
+        """
+        provider = self.config.qwen
+        key = self._get_key_or_raise(provider)
+        payload = qwen_provider.build_qwen_request(
+            query=query,
+            max_results=max_results,
+        )
+        response = self._request_json(
+            provider=provider,
+            method="POST",
+            path=provider.path("search"),
+            payload=payload,
+            key=key.key,
+        )
+        normalized = qwen_provider.normalize_qwen_results(response)
+        results: list[dict[str, Any]] = []
+        for item in normalized.get("results", []):
+            results.append(
+                {
+                    "provider": "qwen",
+                    "source": "web",
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "snippet": item.get("content", ""),
+                    "content": "",
+                    "score": item.get("score"),
+                }
+            )
+        return {
+            "provider": "qwen",
+            "transport": key.source,
+            "query": query,
+            "answer": normalized.get("answer", ""),
+            "results": results,
+            "citations": normalized.get("citations", []),
         }
 
     def _search_xai(
@@ -2883,6 +2943,11 @@ class MySearchClient:
                 raise MySearchError(
                     "Exa search is not configured. Add MYSEARCH_EXA_API_KEY, "
                     "or point MYSEARCH_EXA_BASE_URL to your proxy / compatible gateway."
+                )
+            if provider.name == "qwen":
+                raise MySearchError(
+                    "Qwen / DashScope is not configured. Add MYSEARCH_QWEN_API_KEY, "
+                    "or route MYSEARCH_QWEN_BASE_URL to your proxy / compatible gateway."
                 )
             raise MySearchError(f"{provider.name} is not configured")
         return record

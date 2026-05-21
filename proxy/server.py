@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 import database as db
 from key_pool import pool
+from providers import qwen as qwen_provider
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 ADMIN_SESSION_COOKIE = os.environ.get("ADMIN_SESSION_COOKIE", "mysearch_proxy_session")
@@ -25,6 +26,8 @@ ADMIN_SESSION_MAX_AGE = max(300, int(os.environ.get("ADMIN_SESSION_MAX_AGE", "25
 TAVILY_API_BASE = "https://api.tavily.com"
 FIRECRAWL_API_BASE = "https://api.firecrawl.dev"
 EXA_API_BASE = "https://api.exa.ai"
+QWEN_API_BASE = os.environ.get("QWEN_API_BASE", qwen_provider.QWEN_API_BASE).rstrip("/")
+QWEN_FALLBACK_ENABLED = os.environ.get("QWEN_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _normalize_path(value, default):
@@ -699,6 +702,9 @@ def normalize_usage_payload(service, payload):
 
 async def sync_usage_for_key_row(key_row):
     service = key_row.get("service") or "tavily"
+    if service in ("exa", "qwen"):
+        # 这两个服务没有官方 usage 查询接口，跳过同步。
+        return {"key_id": key_row["id"], "status": "skipped"}
     try:
         if service == "firecrawl":
             payload = await fetch_remote_usage_firecrawl(key_row["key"])
@@ -726,21 +732,25 @@ async def sync_usage_for_key_row(key_row):
 
 
 async def sync_usage_cache(force=False, key_id=None, service=None):
-    if service == "exa":
+    if service in ("exa", "qwen"):
         rows = []
         if key_id is not None:
             row = db.get_key_by_id(key_id)
-            if row and row["service"] == "exa":
+            if row and row["service"] == service:
                 rows = [dict(row)]
         else:
-            rows = [dict(row) for row in db.get_all_keys("exa")]
+            rows = [dict(row) for row in db.get_all_keys(service)]
+        if service == "qwen":
+            detail = "通义 DashScope 未提供官方用量查询接口"
+        else:
+            detail = "Exa 当前未接入官方额度同步"
         return {
             "requested": len(rows),
             "synced": 0,
             "skipped": len(rows),
             "errors": 0,
             "supported": False,
-            "detail": "Exa 当前未接入官方额度同步",
+            "detail": detail,
         }
 
     rows = []
@@ -776,7 +786,11 @@ async def sync_usage_cache(force=False, key_id=None, service=None):
 
 
 def build_usage_sync_meta_for_dashboard(service, active_keys):
-    if service == "exa":
+    if service in ("exa", "qwen"):
+        if service == "qwen":
+            detail = "实时额度暂时无法查询（通义 DashScope 未提供用量接口）"
+        else:
+            detail = "Exa 实时额度暂时无法查询"
         return {
             "supported": False,
             "requested": len(active_keys),
@@ -784,7 +798,7 @@ def build_usage_sync_meta_for_dashboard(service, active_keys):
             "skipped": len(active_keys),
             "errors": 0,
             "stale_keys": 0,
-            "detail": "Exa 实时额度暂时无法查询",
+            "detail": detail,
         }
 
     stale_keys = sum(1 for key in active_keys if is_usage_sync_stale(key))
@@ -806,7 +820,7 @@ def build_usage_sync_meta_for_dashboard(service, active_keys):
 async def schedule_background_usage_sync(service, active_keys):
     if not DASHBOARD_BACKGROUND_SYNC_ON_STATS:
         return
-    if service == "exa":
+    if service in ("exa", "qwen"):
         return
     if not active_keys:
         return
@@ -997,10 +1011,11 @@ async def build_settings_payload():
 
 
 async def build_stats_payload(auto_sync=False):
-    tavily_stats, firecrawl_stats, exa_stats, social_stats, mysearch_stats = await asyncio.gather(
+    tavily_stats, firecrawl_stats, exa_stats, qwen_stats, social_stats, mysearch_stats = await asyncio.gather(
         build_service_dashboard("tavily", auto_sync=auto_sync),
         build_service_dashboard("firecrawl", auto_sync=auto_sync),
         build_service_dashboard("exa", auto_sync=auto_sync),
+        build_service_dashboard("qwen", auto_sync=auto_sync),
         build_social_dashboard(),
         build_mysearch_dashboard(),
     )
@@ -1009,6 +1024,7 @@ async def build_stats_payload(auto_sync=False):
             "tavily": tavily_stats,
             "firecrawl": firecrawl_stats,
             "exa": exa_stats,
+            "qwen": qwen_stats,
         },
         "social": social_stats,
         "mysearch": mysearch_stats,
@@ -1651,6 +1667,81 @@ async def shutdown():
 
 # ═══ Tavily 代理端点 ═══
 
+async def _execute_qwen_fallback(token_row, body):
+    """Tavily 池空时尝试走 Qwen / DashScope 备援。
+
+    返回 ``JSONResponse``（含 ``X-Provider: qwen`` 头）或抛 ``HTTPException``。
+    本函数不会再回退到 tavily（调用方已确认 tavily 池为空）。
+    """
+    if not QWEN_FALLBACK_ENABLED:
+        raise HTTPException(status_code=503, detail="No available API keys")
+
+    qwen_key_info = pool.get_next_key("qwen")
+    if not qwen_key_info:
+        raise HTTPException(status_code=503, detail="all providers exhausted")
+
+    try:
+        qwen_body = qwen_provider.translate_tavily_to_qwen_request(body or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    start = time.time()
+    try:
+        resp, elapsed = await qwen_provider.call_qwen_upstream(
+            http_client,
+            key=qwen_key_info["key"],
+            body=qwen_body,
+            base_url=QWEN_API_BASE,
+        )
+        latency = int((time.time() - start) * 1000)
+        success = resp.status_code < 400
+        pool.report_result("qwen", qwen_key_info["id"], success)
+        db.log_usage(
+            token_row["id"],
+            qwen_key_info["id"],
+            "search",
+            int(success),
+            latency,
+            service="qwen",
+        )
+        if not success:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = {"error": resp.text[:300]}
+            raise HTTPException(status_code=502, detail=detail)
+
+        try:
+            qwen_payload = resp.json()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"invalid qwen response: {exc}")
+
+        translated = qwen_provider.translate_qwen_to_tavily_response(
+            qwen_payload,
+            query=(body or {}).get("query", ""),
+            elapsed_seconds=elapsed,
+        )
+        return JSONResponse(
+            content=translated,
+            status_code=200,
+            headers={"X-Provider": "qwen"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        latency = int((time.time() - start) * 1000)
+        pool.report_result("qwen", qwen_key_info["id"], False)
+        db.log_usage(
+            token_row["id"],
+            qwen_key_info["id"],
+            "search",
+            0,
+            latency,
+            service="qwen",
+        )
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 @app.post("/api/search")
 @app.post("/api/extract")
 async def proxy_tavily(request: Request):
@@ -1662,7 +1753,12 @@ async def proxy_tavily(request: Request):
 
     key_info = pool.get_next_key("tavily")
     if not key_info:
-        raise HTTPException(status_code=503, detail="No available API keys")
+        if endpoint == "search":
+            return await _execute_qwen_fallback(token_row, body)
+        raise HTTPException(
+            status_code=503,
+            detail="extract not supported by fallback providers",
+        )
 
     body["api_key"] = key_info["key"]
     start = time.time()
@@ -1757,6 +1853,71 @@ async def proxy_exa_search(request: Request):
         latency = int((time.time() - start) * 1000)
         pool.report_result("exa", key_info["id"], False)
         db.log_usage(token_row["id"], key_info["id"], "search", 0, latency, service="exa")
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+# ═══ Qwen / DashScope 显式端点 ═══
+
+@app.post("/qwen/search")
+async def proxy_qwen_search(request: Request):
+    """显式 Qwen 搜索端点。
+
+    与 ``/api/search`` 的 fallback 路径不同，这里不做 Tavily schema 翻译，
+    直接透传 DashScope 原始 JSON，由调用方（mysearch 客户端）自己归一化。
+    """
+    raw_body, body_json = await parse_json_body(request)
+    body_dict = body_json if isinstance(body_json, dict) else {}
+
+    token_value = extract_token(request, body_dict)
+    token_row = get_token_row_or_401(token_value, "qwen")
+
+    key_info = pool.get_next_key("qwen")
+    if not key_info:
+        raise HTTPException(status_code=503, detail="No available API keys")
+
+    # 入参支持两种风格：
+    # - 已经是 DashScope 原生结构（含 "input" / "parameters"）→ 透传
+    # - Tavily 风格（仅 query / max_results）→ 翻译成 DashScope 请求体
+    if "input" in body_dict and "parameters" in body_dict:
+        forward_body = dict(body_dict)
+        forward_body.pop("api_key", None)
+    else:
+        try:
+            forward_body = qwen_provider.translate_tavily_to_qwen_request(body_dict)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    start = time.time()
+    try:
+        resp, _elapsed = await qwen_provider.call_qwen_upstream(
+            http_client,
+            key=key_info["key"],
+            body=forward_body,
+            base_url=QWEN_API_BASE,
+        )
+        latency = int((time.time() - start) * 1000)
+        success = resp.status_code < 400
+        pool.report_result("qwen", key_info["id"], success)
+        db.log_usage(
+            token_row["id"],
+            key_info["id"],
+            "search",
+            int(success),
+            latency,
+            service="qwen",
+        )
+        content_type = resp.headers.get("content-type", "").lower()
+        if "application/json" in content_type:
+            return JSONResponse(
+                content=resp.json(),
+                status_code=resp.status_code,
+                headers={"X-Provider": "qwen"},
+            )
+        return forward_raw_response(resp)
+    except Exception as exc:
+        latency = int((time.time() - start) * 1000)
+        pool.report_result("qwen", key_info["id"], False)
+        db.log_usage(token_row["id"], key_info["id"], "search", 0, latency, service="qwen")
         raise HTTPException(status_code=502, detail=str(exc))
 
 

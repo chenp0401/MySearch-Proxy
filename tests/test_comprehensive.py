@@ -65,6 +65,7 @@ def _minimal_config(
     firecrawl_keys: list[str] | object = _SENTINEL,
     exa_keys: list[str] | object = _SENTINEL,
     xai_keys: list[str] | object = _SENTINEL,
+    qwen_keys: list[str] | object = _SENTINEL,
     search_cache_ttl: int = 30,
     extract_cache_ttl: int = 300,
 ) -> MySearchConfig:
@@ -85,6 +86,7 @@ def _minimal_config(
         firecrawl=_minimal_provider("firecrawl", keys=["fc-test"] if firecrawl_keys is _SENTINEL else firecrawl_keys),
         exa=_minimal_provider("exa", keys=[] if exa_keys is _SENTINEL else exa_keys),
         xai=_minimal_provider("xai", keys=[] if xai_keys is _SENTINEL else xai_keys),
+        qwen=_minimal_provider("qwen", keys=[] if qwen_keys is _SENTINEL else qwen_keys),
     )
 
 

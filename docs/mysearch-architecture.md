@@ -85,6 +85,7 @@
 - Firecrawl 官方 / 兼容接口
 - xAI 官方搜索模式
 - `grok2api-compatible + custom social gateway`
+- **（私有 fork 扩展）** Qwen / DashScope：仅 web 通道，作为 Tavily 耗尽后的 proxy 层 fallback；也可以通过 `provider="qwen"` / `POST /qwen/search` 显式调用
 
 当前还没有直接内建：
 

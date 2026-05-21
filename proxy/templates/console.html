@@ -28,6 +28,8 @@
   --exa-soft: rgba(15, 95, 215, 0.10);
   --firecrawl: #b45309;
   --firecrawl-soft: rgba(180, 83, 9, 0.10);
+  --qwen: #7c3aed;
+  --qwen-soft: rgba(124, 58, 237, 0.10);
   --ok: #15803d;
   --warn: #d97706;
   --danger: #dc2626;
@@ -242,6 +244,12 @@ body::after {
   background: var(--firecrawl-soft);
   color: var(--firecrawl);
   border: 1px solid rgba(180, 83, 9, 0.14);
+}
+
+.service-chip[data-service="qwen"] {
+  background: var(--qwen-soft);
+  color: var(--qwen);
+  border: 1px solid rgba(124, 58, 237, 0.14);
 }
 
 .hero-actions {
@@ -824,6 +832,10 @@ body.modal-open {
   background: linear-gradient(90deg, #b45309, #fb923c);
 }
 
+.service-toggle[data-service="qwen"]::before {
+  background: linear-gradient(90deg, #7c3aed, #c4b5fd);
+}
+
 .service-toggle[data-service="tavily"]::after {
   background: var(--tavily-soft);
 }
@@ -834,6 +846,10 @@ body.modal-open {
 
 .service-toggle[data-service="firecrawl"]::after {
   background: var(--firecrawl-soft);
+}
+
+.service-toggle[data-service="qwen"]::after {
+  background: var(--qwen-soft);
 }
 
 .service-toggle.is-active[data-service="tavily"] {
@@ -864,6 +880,16 @@ body.modal-open {
   box-shadow:
     0 24px 56px rgba(15, 23, 42, 0.14),
     0 0 0 1px rgba(180, 83, 9, 0.10);
+}
+
+.service-toggle.is-active[data-service="qwen"] {
+  border-color: rgba(124, 58, 237, 0.22);
+  background:
+    linear-gradient(135deg, rgba(124, 58, 237, 0.16), rgba(255, 255, 255, 0.94)),
+    radial-gradient(circle at top right, rgba(124, 58, 237, 0.12), transparent 40%);
+  box-shadow:
+    0 24px 56px rgba(15, 23, 42, 0.14),
+    0 0 0 1px rgba(124, 58, 237, 0.10);
 }
 
 .service-toggle.is-active::before {
@@ -1076,6 +1102,10 @@ body.modal-open {
 
 .service-panel[data-service="firecrawl"] {
   border-top: 6px solid var(--firecrawl);
+}
+
+.service-panel[data-service="qwen"] {
+  border-top: 6px solid var(--qwen);
 }
 
 .service-head {
@@ -2020,6 +2050,10 @@ h3,
   background: linear-gradient(90deg, #c46f1c, #f3a250);
 }
 
+.service-panel[data-service="qwen"]::before {
+  background: linear-gradient(90deg, #6d28d9, #a78bfa);
+}
+
 .service-panel[data-service="social"]::before {
   background: linear-gradient(90deg, #5b78f6, #91a6ff);
 }
@@ -2536,6 +2570,23 @@ const SERVICE_META = {
     switcherBadges: ['Depth', '正文抓取', '官方额度同步'],
     switcherFoot: '独立 Key 池 + 独立额度同步',
     spotlightDesc: 'Firecrawl 继续负责正文抓取与页面抽取，额度同步仍按 Firecrawl credits 展示。',
+  },
+  qwen: {
+    label: 'Qwen',
+    emailPrefix: 'qwen-',
+    tokenPrefix: 'qwen-',
+    keyPlaceholder: 'sk-xxxxxxxx',
+    importPlaceholder: '支持粘贴 email,password,sk-xxx,timestamp 或仅 sk-xxx，每行一条',
+    quotaSource: '实时额度暂时无法查询（通义 DashScope 未提供用量接口）',
+    routeHint: '代理端点: POST /qwen/search；Tavily 配额耗尽时作为 /api/search 的智能 fallback',
+    syncButton: 'Qwen 暂不支持同步',
+    syncSupported: false,
+    panelIntro: '作为 Tavily 配额耗尽时的中文搜索备援；proxy 会在 /api/search 自动路由过来。',
+    tokenPoolDesc: '给业务侧发放 Qwen 代理 Token，和 Tavily / Firecrawl / Exa 完全分开创建、限流、统计。',
+    keyPoolDesc: 'Qwen / DashScope Key 独立存储，导入时只写入 Qwen 池，不会和别的服务混用池子。',
+    switcherBadges: ['Search', '中文备扣', 'Tavily fallback'],
+    switcherFoot: '独立 Key 池 + 仅代理统计',
+    spotlightDesc: 'Qwen / DashScope 作为 Tavily 耗尽后的中文搜索备援，也可通过 /qwen/search 显式调用。',
   },
 };
 

@@ -289,6 +289,7 @@ MySearch 默认不是“所有问题都塞给一个 provider”。
 
 - `web / news`
   - 优先 Tavily
+  - **（私有 fork 扩展）** Tavily key 池全部失效或耗尽时，proxy 自动 fallback 到 Qwen / DashScope，响应头标记 `X-Provider: qwen`，调用方零改造。
 - `docs / github / pdf / pricing / changelog`
   - 优先 Firecrawl
 - 普通网页补充发现
@@ -330,3 +331,14 @@ MySearch 默认不是“所有问题都塞给一个 provider”。
 下图是公开页面的历史截图，实时状态请以线上页面为准：
 
 ![MySearch Skill Security Scan](./docs/images/mysearch-skill-security-scan.jpg)
+
+## 私有 fork 扩展（fork-only features）
+
+> 以下能力**仅存在于本地私有 fork**，不在上游 `skernelx/MySearch-Proxy` 中。设计上尽量隔离在新建模块（`mysearch/providers/qwen.py`、`proxy/providers/qwen.py`），主干仅做枚举与 dispatch 接入，便于未来 rebase 上游。
+
+| 扩展 | 说明 |
+|---|---|
+| Qwen / DashScope provider | 仅 web 搜索通道。作为 Tavily key 池耗尽后的 proxy 层 fallback；也可通过 `provider="qwen"` / `POST /qwen/search` 显式调用。 |
+| `X-Provider: qwen` 响应头 | 当 `/api/search` 在 proxy 层走了 qwen fallback，会在响应头标记，便于调用方观测。 |
+| `QWEN_FALLBACK_ENABLED` | 环境变量，默认 `true`。设为 `false` 后 proxy 在 Tavily 池空时回退为旧的 503 行为，便于回滚。 |
+| 控制台 qwen 卡片 | 紫色配色（`--qwen: #7c3aed`），无实时额度同步（DashScope 不提供官方用量接口，控制台显示「实时额度暂时无法查询」提示）。 |

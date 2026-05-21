@@ -238,6 +238,7 @@ class MySearchConfig:
     firecrawl: ProviderConfig
     exa: ProviderConfig
     xai: ProviderConfig
+    qwen: ProviderConfig
 
     @classmethod
     def from_env(cls) -> "MySearchConfig":
@@ -419,5 +420,38 @@ class MySearchConfig:
                     ),
                 ],
                 keys_file=_resolve_path("MYSEARCH_XAI_KEYS_FILE"),
+            ),
+            qwen=ProviderConfig(
+                name="qwen",
+                base_url=_provider_base_url(
+                    explicit_names=("MYSEARCH_QWEN_BASE_URL",),
+                    proxy_base_url=proxy_base_url,
+                    default="https://dashscope.aliyuncs.com",
+                ),
+                auth_mode=_get_str("MYSEARCH_QWEN_AUTH_MODE", default="bearer"),  # type: ignore[arg-type]
+                auth_header=_get_str("MYSEARCH_QWEN_AUTH_HEADER", default="Authorization"),
+                auth_scheme=_get_str("MYSEARCH_QWEN_AUTH_SCHEME", default="Bearer"),
+                auth_field=_get_str("MYSEARCH_QWEN_AUTH_FIELD", default="api_key"),
+                default_paths={
+                    "search": _provider_path(
+                        explicit_name="MYSEARCH_QWEN_SEARCH_PATH",
+                        proxy_base_url=proxy_base_url,
+                        proxy_default="/qwen/search",
+                        default="/api/v1/services/aigc/text-generation/generation",
+                    ),
+                },
+                api_keys=[
+                    *_get_list("MYSEARCH_QWEN_API_KEYS"),
+                    *(
+                        [_get_str("MYSEARCH_QWEN_API_KEY")]
+                        if _get_str("MYSEARCH_QWEN_API_KEY")
+                        else ([proxy_api_key] if proxy_api_key else [])
+                    ),
+                ],
+                keys_file=_resolve_path(
+                    "MYSEARCH_QWEN_KEYS_FILE",
+                    "MYSEARCH_QWEN_ACCOUNTS_FILE",
+                    default_name="qwen_accounts.txt",
+                ),
             ),
         )

@@ -606,3 +606,18 @@ larger than necessary.
 
 If you need a reusable public search foundation, that is exactly what it is
 built for.
+
+## Fork-only features
+
+> The features below exist **only in this private fork** and are not part of
+> upstream `skernelx/MySearch-Proxy`. New code is intentionally isolated to
+> `mysearch/providers/qwen.py` and `proxy/providers/qwen.py`; the trunk only
+> grows by enum values and a single dispatch line, to minimise rebase
+> conflicts when tracking upstream `0.1.x`.
+
+| Feature | Notes |
+|---|---|
+| Qwen / DashScope provider | Web-search channel only. Acts as a Tavily-pool-exhausted fallback at the proxy layer; can also be invoked explicitly via `provider="qwen"` or `POST /qwen/search`. |
+| `X-Provider: qwen` response header | Set when `/api/search` falls back through the qwen path, so callers can observe the switch without changes. |
+| `QWEN_FALLBACK_ENABLED` env | Defaults to `true`. Set to `false` to disable the smart fallback and restore the original 503-on-exhausted behavior. |
+| Console qwen card | Purple accent (`--qwen: #7c3aed`); no live quota sync (DashScope does not expose an official usage endpoint), so the panel shows "real-time quota not available". |

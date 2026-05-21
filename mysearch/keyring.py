@@ -25,12 +25,14 @@ class MySearchKeyRing:
             "firecrawl": [],
             "exa": [],
             "xai": [],
+            "qwen": [],
         }
         self._indexes = {
             "tavily": 0,
             "firecrawl": 0,
             "exa": 0,
             "xai": 0,
+            "qwen": 0,
         }
         self.reload()
 
@@ -40,6 +42,7 @@ class MySearchKeyRing:
             self._keys["firecrawl"] = self._load_provider(self.config.firecrawl)
             self._keys["exa"] = self._load_provider(self.config.exa)
             self._keys["xai"] = self._load_provider(self.config.xai)
+            self._keys["qwen"] = self._load_provider(self.config.qwen)
             for provider, keys in self._keys.items():
                 if self._indexes[provider] >= len(keys):
                     self._indexes[provider] = 0
