@@ -28,7 +28,7 @@
 如果你发的是 GitHub 链接，也可以直接这样说：
 
 ```text
-请阅读 https://github.com/skernelx/MySearch-Proxy/tree/main/skill 里的 README 和 SKILL，帮我自动安装并验证 MySearch。
+请阅读 https://github.com/chenp0401/MySearch-Proxy/tree/main/skill 里的 README 和 SKILL，帮我自动安装并验证 MySearch。
 ```
 
 如果你手里已经有一个部署好的 `MySearch streamableHTTP` 地址，也可以直接这样发：

@@ -28,7 +28,7 @@ Open skill/README_EN.md and skill/SKILL.md from this repository, install MySearc
 If you only want to share the GitHub link, you can also say:
 
 ```text
-Please read https://github.com/skernelx/MySearch-Proxy/tree/main/skill and automatically install and verify MySearch for me.
+Please read https://github.com/chenp0401/MySearch-Proxy/tree/main/skill and automatically install and verify MySearch for me.
 ```
 
 If you already have a deployed `MySearch streamableHTTP` endpoint, you can also

@@ -28,7 +28,7 @@ Open openclaw/README_EN.md and openclaw/SKILL.md from this repository, install t
 If you only want to share the GitHub link, you can also say:
 
 ```text
-Please read https://github.com/skernelx/MySearch-Proxy/tree/main/openclaw and automatically install and verify the MySearch OpenClaw skill for me.
+Please read https://github.com/chenp0401/MySearch-Proxy/tree/main/openclaw and automatically install and verify the MySearch OpenClaw skill for me.
 ```
 
 ## If you are an AI assistant, what to do after receiving this directory

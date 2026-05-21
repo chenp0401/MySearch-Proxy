@@ -298,7 +298,7 @@ Open skill/README_EN.md and skill/SKILL.md from this repository, install MySearc
 If you are only sharing the GitHub link, this also works:
 
 ```text
-Please read https://github.com/skernelx/MySearch-Proxy/tree/main/skill and automatically install and verify MySearch for me.
+Please read https://github.com/chenp0401/MySearch-Proxy/tree/main/skill and automatically install and verify MySearch for me.
 ```
 
 ### 1. Install the MySearch MCP for Codex / Claude Code
@@ -425,7 +425,7 @@ Open openclaw/README_EN.md and openclaw/SKILL.md from this repository, install t
 If you are only sharing the GitHub link, this also works:
 
 ```text
-Please read https://github.com/skernelx/MySearch-Proxy/tree/main/openclaw and automatically install and verify the MySearch OpenClaw skill for me.
+Please read https://github.com/chenp0401/MySearch-Proxy/tree/main/openclaw and automatically install and verify the MySearch OpenClaw skill for me.
 ```
 
 Public page:

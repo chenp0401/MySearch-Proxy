@@ -9,8 +9,8 @@ description: >-
   MySearch is healthy.
 author: skernelx
 license: MIT
-repository: https://github.com/skernelx/MySearch-Proxy
-homepage: https://github.com/skernelx/MySearch-Proxy/tree/main/openclaw
+repository: https://github.com/chenp0401/MySearch-Proxy
+homepage: https://github.com/chenp0401/MySearch-Proxy/tree/main/openclaw
 security_disclosure: |
   MySearch sends queries and whichever provider or proxy credentials you configure
   to the configured endpoints for Tavily, Firecrawl, Exa, and optional xAI/social
