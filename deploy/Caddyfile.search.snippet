@@ -22,9 +22,8 @@ search.uctest.cn {
 
     # mysearch-proxy 容器绑 127.0.0.1:9874，host-mode Caddy 直接走 loopback。
     reverse_proxy 127.0.0.1:9874 {
-        # 透传真实客户端 IP（Caddy 全局已配 trusted_proxies，这里只补 header）
+        # Caddy 默认会传 X-Forwarded-For/Proto/Host，这里只补 X-Real-IP。
         header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-Proto {scheme}
     }
 
     header {

@@ -97,7 +97,7 @@ nano .env   # 替换 ADMIN_PASSWORD 等占位符
 - `ADMIN_PASSWORD=` 24 位随机串，建议 `openssl rand -base64 24` 生成
 - 其余按需
 
-> 通义 Qwen 的 API key **不在 .env 里**，部署起来后再到 `https://search.uctest.cn/admin` 控制台 -> Service: qwen -> 注入。
+> 通义 Qwen 的 API key **不在 .env 里**，部署起来后再到 `https://search.uctest.cn/`（控制台挂在根路径，不是 `/admin`）-> Workspace: qwen -> 注入。
 
 ---
 
@@ -122,20 +122,64 @@ curl -fsS http://127.0.0.1:9874/healthz
 
 ## 4. 接入 Caddy
 
+### 4.0 前置：确认 Caddy admin endpoint 已开启
+
+现网 `Caddyfile` 全局块**必须**配置：
+
+```caddyfile
+{
+    admin localhost:2019   # 仅本地回环监听，外网不可达，但允许 caddy reload
+    # admin off            # ★ 旧值：彻底关闭 admin API，会让 caddy reload 直接报错
+    ...
+}
+```
+
+如果当前是 `admin off`，请先改成 `admin localhost:2019`，**然后做一次 `docker restart caddy`**
+（约 0.3s 的中断窗口，不可避免）。从此之后所有 Caddyfile 改动都可以无中断 reload。
+
+查看是否生效：
+
+```bash
+curl -s -o /dev/null -w "admin API: %{http_code}\n" http://127.0.0.1:2019/config/
+# 期望：admin API: 200
+```
+
 ### 4.1 把片段追加到 Caddyfile
 
 ```bash
-cat /root/.openclaw/mysearch-proxy/Caddyfile.search.snippet >> /root/.openclaw/searxng/Caddyfile
+scp deploy/Caddyfile.search.snippet root@43.165.170.157:/root/.openclaw/searxng/
+ssh root@43.165.170.157
+cp /root/.openclaw/searxng/Caddyfile /root/.openclaw/searxng/Caddyfile.bak.$(date +%Y%m%d-%H%M%S)
+{ echo "" ; cat /root/.openclaw/searxng/Caddyfile.search.snippet ; } >> /root/.openclaw/searxng/Caddyfile
 ```
-
-`Caddyfile.search.snippet` 来源：仓库 `deploy/Caddyfile.search.snippet`，先 scp / curl 上来。
 
 ### 4.2 校验语法 + reload
 
+#### 4.2.1 用一次性容器 validate（推荐，避开 bind mount 缓存陷阱）
+
 ```bash
-docker exec caddy caddy validate --config /etc/caddy/Caddyfile
-docker exec caddy caddy reload   --config /etc/caddy/Caddyfile
+docker run --rm \
+  -v /root/.openclaw/searxng/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v /etc/ssl/certimate:/etc/ssl/certimate:ro \
+  caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
+
+直接 `docker exec caddy caddy validate ...` 在某些情况下会读到 bind mount 残留的旧 inode
+（特别是用 `sed -i` 修改过宿主文件后），看到的是过期内容。**用一次性容器永远读宿主最新文件**。
+
+#### 4.2.2 reload
+
+```bash
+docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+如果上一步 4.0 没做（即 `admin off` 还在），reload 会报：
+
+```
+Error: sending configuration to instance: ... dial tcp [::1]:2019: connect: connection refused
+```
+
+此时只能 fallback 到 `docker restart caddy`（中断 0.3s 左右）。
 
 ### 4.3 端到端验证
 
@@ -144,9 +188,18 @@ docker exec caddy caddy reload   --config /etc/caddy/Caddyfile
 ```bash
 curl -I https://search.uctest.cn/healthz
 # 期望：HTTP/2 200，证书 CN 为 search.uctest.cn
+curl -s https://search.uctest.cn/healthz
+# 期望 body：{"status":"ok"}
 ```
 
-浏览器打开 <https://search.uctest.cn/admin>，用 `ADMIN_PASSWORD` 登录控制台。
+浏览器打开 <https://search.uctest.cn/>（控制台挂在根路径，**不是 `/admin`**），用 `ADMIN_PASSWORD` 登录控制台。
+
+顺手验证 admin API 没有外露：
+
+```bash
+curl --connect-timeout 3 http://search.uctest.cn:2019/config/
+# 期望：connection 超时或 Empty reply（因为 Caddy 只 bind 在 localhost）
+```
 
 ---
 
@@ -191,6 +244,8 @@ docker pull ghcr.io/chenp0401/mysearch-proxy:sha-abcdef0
 | --- | --- |
 | `docker compose pull` 提示 `denied` | GHCR 登录失效；重跑 `docker login ghcr.io -u chenp0401` |
 | Caddy `reload` 报 tls 文件不存在 | certimate 证书未部署到 `/etc/ssl/certimate/`；先在 certimate 工作流里跑一次部署 |
+| Caddy `reload` 报 `dial tcp [::1]:2019: connection refused` | Caddyfile 全局块写了 `admin off`。改成 `admin localhost:2019` 后 `docker restart caddy` 一次，之后 reload 就能用（详见 §4.0） |
+| 改了 Caddyfile，`docker exec caddy caddy validate` 看到的还是旧内容 | bind mount inode 陷阱：`sed -i` 等编辑会替换宿主 inode 但容器仍持有旧 inode。要么用 `cat > file` 这种保留 inode 的方式编辑，要么用 §4.2.1 的一次性容器 validate，要么 `docker restart caddy` 让容器重新 mount |
 | `https://search.uctest.cn` 502 | proxy 容器没起，或没绑 127.0.0.1:9874。`docker compose logs` 看 Uvicorn 是否启动 |
 | 容器一直 `Restarting`，logs 报 `sqlite3.OperationalError: unable to open database file` | 宿主 `data/` 目录属主不是 999:999，容器内非 root 用户写不进去。`chown -R 999:999 /root/.openclaw/mysearch-proxy/data` 后 `docker compose up -d --force-recreate` |
 | `https://search.uctest.cn` 证书是 ZeroSSL/LE | Caddyfile 没写 `tls ...`，落到了 Caddy 自动 ACME。检查片段是否真的追加生效 |
