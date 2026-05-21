@@ -32,6 +32,7 @@
 
 - `POST /api/search`
 - `POST /api/extract`
+- `POST /search`、`POST /extract` —— **官方风格透明端点**，用于让官方 `tavily-python` SDK / Agent Skill 直接接入（详见下文「官方 SDK 透明接入」）
 
 控制台能力：
 
@@ -46,6 +47,7 @@
 
 - `POST /firecrawl/v2/search`
 - `POST /firecrawl/v2/scrape`
+- `ANY /v2/{path}` —— **官方风格透明端点**，路径与官方 `https://api.firecrawl.dev/v2/*` 完全一致
 
 控制台能力：
 
@@ -98,6 +100,59 @@
 - gateway token 管理
 - 兼容 admin API 对接
 - token 状态展示
+
+## 官方 SDK / Agent Skill 透明接入
+
+目标：**官方 SDK 或官方 Agent Skill（[Tavily Skills](https://docs.tavily.com/documentation/agent-skills)、[Firecrawl Skills](https://github.com/firecrawl/skills)）代码一行不改**，仅通过环境变量即可让其走 MySearch Proxy。
+
+### 它是怎么实现的
+
+1. **服务端镜像路由**（已内置）：MySearch 同时暴露官方风格的路径
+   - Tavily：`POST /search`、`POST /extract`，与官方 `https://api.tavily.com/{search,extract}` 同构
+   - Firecrawl：`ANY /v2/{path}`，与官方 `https://api.firecrawl.dev/v2/*` 同构
+   - 鉴权同时支持 `Authorization: Bearer <token>`、`x-api-key` header、body `api_key` 字段，三选一
+
+2. **SDK 透明补丁**（[`tavily_patch.py`](./tavily_patch.py)，可选）：因为官方 SDK 写死了上游域名，补丁通过 monkey-patch 让 SDK 在未显式指定 base URL 时自动从环境变量读取，实现真正的 0 修改接入。
+
+### 三步接入
+
+**Step 1**：在 MySearch 控制台创建一个 `mysp-` 通用 token（`/admin` → token 池 → 新建）。
+
+**Step 2**：设置环境变量：
+
+```bash
+export TAVILY_BASE_URL=https://search.uctest.cn
+export TAVILY_API_KEY=mysp-xxxxxxxxxxxxxxxxxxxxxxxx
+
+export FIRECRAWL_API_URL=https://search.uctest.cn
+export FIRECRAWL_API_KEY=mysp-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+**Step 3**：在你的 Skill / 应用入口最前面加一行（仅一次）：
+
+```python
+import tavily_patch  # noqa: F401
+```
+
+之后官方 Skill 里的代码（`TavilyClient(api_key=...)`、`FirecrawlApp(api_key=...)`）**完全不需要改动**，所有调用会自动走 MySearch Proxy。
+
+### 不想用 patch 的写法（也可以）
+
+两个官方 SDK 其实本身都接受显式的 base URL 参数，如果你能改一行 Skill 初始化代码，可以不用 patch：
+
+```python
+from tavily import TavilyClient
+client = TavilyClient(
+    api_key="mysp-xxxx",
+    api_base_url="https://search.uctest.cn",
+)
+
+from firecrawl import FirecrawlApp
+app = FirecrawlApp(
+    api_key="mysp-xxxx",
+    api_url="https://search.uctest.cn",
+)
+```
 
 ## 当前推荐用法
 

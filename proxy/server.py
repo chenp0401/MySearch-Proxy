@@ -1751,9 +1751,13 @@ async def _execute_qwen_fallback(token_row, body):
 
 @app.post("/api/search")
 @app.post("/api/extract")
+@app.post("/search")
+@app.post("/extract")
 async def proxy_tavily(request: Request):
     body = await request.json()
-    endpoint = request.url.path.replace("/api/", "")
+    # 同时支持 /api/search、/api/extract（MySearch 原生路径）
+    # 与 /search、/extract（Tavily 官方风格透明路径）
+    endpoint = request.url.path.lstrip("/").replace("api/", "", 1)
 
     token_value = extract_token(request, body)
     token_row = get_token_row_or_401(token_value, "tavily")
@@ -1786,7 +1790,14 @@ async def proxy_tavily(request: Request):
 # ═══ Firecrawl 代理端点 ═══
 
 @app.api_route("/firecrawl/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.api_route("/v2/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_firecrawl(path: str, request: Request):
+    # 同时支持 /firecrawl/<path>（MySearch 原生）
+    # 与 /v2/<path>（Firecrawl 官方风格透明路径，例如 firecrawl-py 默认）
+    if request.url.path.startswith("/v2/"):
+        upstream_path = f"v2/{path}"
+    else:
+        upstream_path = path
     raw_body, body_json = await parse_json_body(request)
     token_value = extract_token(request, body_json)
     token_row = get_token_row_or_401(token_value, "firecrawl")
@@ -1804,7 +1815,7 @@ async def proxy_firecrawl(path: str, request: Request):
     try:
         resp = await http_client.request(
             request.method,
-            f"{FIRECRAWL_API_BASE}/{path}",
+            f"{FIRECRAWL_API_BASE}/{upstream_path}",
             params=dict(request.query_params),
             content=forward_content if request.method != "GET" else None,
             headers=build_forward_headers(request, key_info["key"]),
