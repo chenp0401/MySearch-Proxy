@@ -2578,15 +2578,15 @@ const SERVICE_META = {
     keyPlaceholder: 'sk-xxxxxxxx',
     importPlaceholder: '支持粘贴 email,password,sk-xxx,timestamp 或仅 sk-xxx，每行一条',
     quotaSource: '实时额度暂时无法查询（通义 DashScope 未提供用量接口）',
-    routeHint: '代理端点: POST /qwen/search；Tavily 配额耗尽时作为 /api/search 的智能 fallback',
+    routeHint: '代理端点: POST /qwen/search（REST）、POST /qwen/mcp（标准 streamable-http MCP，给 Claude Code / Cursor 等原生 MCP 客户端用）；Tavily 配额耗尽时也作为 /api/search 的智能 fallback',
     syncButton: 'Qwen 暂不支持同步',
     syncSupported: false,
-    panelIntro: '作为 Tavily 配额耗尽时的中文搜索备援；proxy 会在 /api/search 自动路由过来。',
+    panelIntro: '作为 Tavily 配额耗尽时的中文搜索备援；proxy 会在 /api/search 自动路由过来。同时通过 /qwen/mcp 暴露标准 MCP 网关，给只认 streamable-http 协议的客户端用。',
     tokenPoolDesc: '给业务侧发放 Qwen 代理 Token，和 Tavily / Firecrawl / Exa 完全分开创建、限流、统计。',
     keyPoolDesc: 'Qwen / DashScope Key 独立存储，导入时只写入 Qwen 池，不会和别的服务混用池子。',
-    switcherBadges: ['Search', '中文备扣', 'Tavily fallback'],
+    switcherBadges: ['Search', 'MCP', '中文备扣', 'Tavily fallback'],
     switcherFoot: '独立 Key 池 + 仅代理统计',
-    spotlightDesc: 'Qwen / DashScope 作为 Tavily 耗尽后的中文搜索备援，也可通过 /qwen/search 显式调用。',
+    spotlightDesc: 'Qwen / DashScope 作为 Tavily 耗尽后的中文搜索备援；也可通过 /qwen/search 显式调用，或通过 /qwen/mcp 当作标准 MCP 网关接入 Claude Code / Cursor。',
   },
 };
 
@@ -3502,6 +3502,40 @@ curl -X POST ${baseUrl}/exa/search \\
 curl -X POST ${baseUrl}/exa/search \\
   -H "Content-Type: application/json" \\
   -d '{"api_key":"${token}","query":"OpenAI latest model","numResults":3}'`;
+  }
+
+  if (service === 'qwen') {
+    return `# Qwen WebSearch（REST）
+curl -X POST ${baseUrl}/qwen/web_search \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${token}" \\
+  -d '{"query":"今天 A 股行情","count":3}'
+
+# 标准 streamable-http MCP 网关（给 Claude Code / Cursor 等原生 MCP 客户端用）
+# 1) initialize
+curl -X POST ${baseUrl}/qwen/mcp \\
+  -H "Content-Type: application/json" \\
+  -H "Accept: application/json,text/event-stream" \\
+  -H "Authorization: Bearer ${token}" \\
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke","version":"1.0"}}}'
+
+# 2) tools/list
+curl -X POST ${baseUrl}/qwen/mcp \\
+  -H "Content-Type: application/json" \\
+  -H "Accept: application/json,text/event-stream" \\
+  -H "Authorization: Bearer ${token}" \\
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+
+# 3) tools/call(bailian_web_search)
+curl -X POST ${baseUrl}/qwen/mcp \\
+  -H "Content-Type: application/json" \\
+  -H "Accept: application/json,text/event-stream" \\
+  -H "Authorization: Bearer ${token}" \\
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bailian_web_search","arguments":{"query":"MCP protocol 2025","count":3}}}'
+
+# Claude Code CLI 一键接入
+# claude mcp add --transport http mysearch-qwen ${baseUrl}/qwen/mcp \\
+#   --header "Authorization: Bearer ${token}"`;
   }
 
   return `# Tavily Search

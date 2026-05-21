@@ -154,6 +154,82 @@ app = FirecrawlApp(
 )
 ```
 
+### Qwen WebSearch MCP（原生 MCP 客户端零改造接入）
+
+针对**只认 streamable-http MCP 协议**的客户端（Claude Code CLI、Cursor、各类 MCP host），MySearch 暴露了一个标准 MCP 网关：
+
+```
+POST https://<your-proxy>/qwen/mcp
+Authorization: Bearer mysp-xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+它做了这些事：
+
+- `initialize` / `notifications/initialized` / `tools/list` 在网关本地直接应答，不消耗 Qwen 配额；
+- `tools/call(bailian_web_search)` 由网关从 Qwen key 池里挑一把可用 key，转发到阿里云百炼官方 `https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp`，把搜索结果原样回 JSON-RPC；
+- 全程**只看 mysp- token**，不向客户端暴露任何上游真 key；调用成功 / 失败都会进 `pool.report_result` + 控制台 token 用量统计（`service=qwen, endpoint=mcp`）。
+
+#### Claude Code CLI 接入
+
+```bash
+claude mcp add --transport http mysearch-qwen \
+  https://search.uctest.cn/qwen/mcp \
+  --header "Authorization: Bearer mysp-xxxxxxxxxxxxxxxxxxxxxxxx"
+
+claude mcp list
+# mysearch-qwen: https://search.uctest.cn/qwen/mcp (HTTP) - ✓ Connected
+```
+
+之后在 Claude Code 里直接说「帮我搜一下 …」即可，模型会自动调用 `bailian_web_search` 工具。
+
+#### Cursor / 通用 MCP 客户端
+
+`mcp.json`（或对应配置文件）：
+
+```json
+{
+  "mcpServers": {
+    "mysearch-qwen": {
+      "type": "http",
+      "url": "https://search.uctest.cn/qwen/mcp",
+      "headers": {
+        "Authorization": "Bearer mysp-xxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  }
+}
+```
+
+#### 手动 smoke test（不依赖任何客户端）
+
+```bash
+URL=https://search.uctest.cn/qwen/mcp
+TOKEN=mysp-xxxxxxxxxxxxxxxxxxxxxxxx
+
+# 1) initialize
+curl -sS -X POST "$URL" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json,text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"smoke","version":"1.0"}}}'
+
+# 2) tools/list
+curl -sS -X POST "$URL" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json,text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+
+# 3) tools/call
+curl -sS -X POST "$URL" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json,text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bailian_web_search","arguments":{"query":"MCP protocol 2025","count":3}}}'
+```
+
+> 与 Tavily/Firecrawl 的"官方风格透明路由"不同，这里走的是**标准 MCP JSON-RPC**：客户端不需要任何 SDK monkey-patch，只要支持 streamable-http transport 就能直接连。
+
 ## 当前推荐用法
 
 推荐你把它当成统一入口，而不是单独使用某一个 provider 工作台。
@@ -342,6 +418,8 @@ ADMIN_SESSION_MAX_AGE=2592000
 - `POST /firecrawl/v2/search`
 - `POST /firecrawl/v2/scrape`
 - `POST /exa/search`
+- `POST /qwen/web_search` —— Qwen WebSearch REST 接口
+- `POST /qwen/mcp` —— Qwen WebSearch 标准 MCP（streamable-http）网关，给 Claude Code / Cursor 等原生 MCP 客户端用
 - `GET /social/health`
 - `POST /social/search`
 
