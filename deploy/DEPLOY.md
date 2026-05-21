@@ -62,6 +62,9 @@ echo '<GHCR_PAT>' | docker login ghcr.io -u chenp0401 --password-stdin
 ```bash
 ssh root@43.165.170.157
 mkdir -p /root/.openclaw/mysearch-proxy/data
+# ★ 必须把 data 目录的 owner 改成 uid=999（容器内非 root 的 app 用户），
+#   否则容器启动会因为 sqlite3.OperationalError: unable to open database file 而崩溃。
+chown -R 999:999 /root/.openclaw/mysearch-proxy/data
 cd /root/.openclaw/mysearch-proxy
 ```
 
@@ -189,6 +192,7 @@ docker pull ghcr.io/chenp0401/mysearch-proxy:sha-abcdef0
 | `docker compose pull` 提示 `denied` | GHCR 登录失效；重跑 `docker login ghcr.io -u chenp0401` |
 | Caddy `reload` 报 tls 文件不存在 | certimate 证书未部署到 `/etc/ssl/certimate/`；先在 certimate 工作流里跑一次部署 |
 | `https://search.uctest.cn` 502 | proxy 容器没起，或没绑 127.0.0.1:9874。`docker compose logs` 看 Uvicorn 是否启动 |
+| 容器一直 `Restarting`，logs 报 `sqlite3.OperationalError: unable to open database file` | 宿主 `data/` 目录属主不是 999:999，容器内非 root 用户写不进去。`chown -R 999:999 /root/.openclaw/mysearch-proxy/data` 后 `docker compose up -d --force-recreate` |
 | `https://search.uctest.cn` 证书是 ZeroSSL/LE | Caddyfile 没写 `tls ...`，落到了 Caddy 自动 ACME。检查片段是否真的追加生效 |
 | 内存压力大 | `docker stats mysearch-proxy`；compose 已设 `mem_limit: 256m`，超限会被 OOM kill 然后 unless-stopped 重启 |
 | 想看真实客户端 IP | proxy 已通过 `X-Forwarded-For / X-Real-IP` 收到；Caddy 全局 `trusted_proxies` 已配 Cloudflare 段，如果直连 LH 就是 client 真实 IP |
