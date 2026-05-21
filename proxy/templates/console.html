@@ -2527,7 +2527,7 @@ const SERVICE_META = {
     keyPlaceholder: 'tvly-xxxxxxxx',
     importPlaceholder: '支持粘贴 email,password,tvly-xxx,timestamp 或仅 tvly-xxx，每行一条',
     quotaSource: '真实额度来自 Tavily 官方 GET /usage',
-    routeHint: '代理端点: POST /api/search, POST /api/extract',
+    routeHint: '代理端点: POST /api/search, POST /api/extract；同时兼容 Tavily 官方风格 POST /search, POST /extract（直接把 TAVILY_BASE_URL 指到本 proxy 即可，官方 Skill 零修改可用）',
     syncButton: '同步 Tavily 额度',
     syncSupported: true,
     panelIntro: '适合新闻、网页线索和基础搜索入口，继续保留现有 Tavily 工作台逻辑不动。',
@@ -2561,7 +2561,7 @@ const SERVICE_META = {
     keyPlaceholder: 'fc-xxxxxxxx',
     importPlaceholder: '支持粘贴 email,password,fc-xxx,timestamp 或仅 fc-xxx，每行一条',
     quotaSource: '真实额度来自 Firecrawl /v2/team/credit-usage',
-    routeHint: '代理端点: /firecrawl/*，例如 POST /firecrawl/v2/scrape',
+    routeHint: '代理端点: /firecrawl/*，例如 POST /firecrawl/v2/scrape；同时兼容 Firecrawl 官方风格 POST /v2/scrape（FIRECRAWL_API_URL 直接指到本 proxy 即可，官方 SDK / Skill 零修改可用）',
     syncButton: '同步 Firecrawl 额度',
     syncSupported: true,
     panelIntro: '适合正文抓取、文档页、PDF 和结构化抽取，继续保持独立 Firecrawl 工作台。',
@@ -3480,7 +3480,15 @@ curl -X GET ${baseUrl}/firecrawl/v2/team/credit-usage \\
 # 也支持 body 里传 api_key
 curl -X POST ${baseUrl}/firecrawl/v2/scrape \\
   -H "Content-Type: application/json" \\
-  -d '{"api_key":"${token}","url":"https://example.com"}'`;
+  -d '{"api_key":"${token}","url":"https://example.com"}'
+
+# 官方风格透明端点（FIRECRAWL_API_URL 直接指到本 proxy，官方 SDK/Skill 零修改）
+# export FIRECRAWL_API_URL=${baseUrl}
+# export FIRECRAWL_API_KEY=${token}
+curl -X POST ${baseUrl}/v2/scrape \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${token}" \\
+  -d '{"url":"https://example.com","formats":["markdown"]}'`;
   }
 
   if (service === 'exa') {
@@ -3511,7 +3519,20 @@ curl -X POST ${baseUrl}/api/extract \\
 # 也支持 body 里传 api_key
 curl -X POST ${baseUrl}/api/search \\
   -H "Content-Type: application/json" \\
-  -d '{"api_key":"${token}","query":"hello world"}'`;
+  -d '{"api_key":"${token}","query":"hello world"}'
+
+# 官方风格透明端点（TAVILY_BASE_URL 直接指到本 proxy，官方 Skill 零修改）
+# export TAVILY_BASE_URL=${baseUrl}
+# export TAVILY_API_KEY=${token}
+curl -X POST ${baseUrl}/search \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${token}" \\
+  -d '{"query":"hello world","max_results":1}'
+
+curl -X POST ${baseUrl}/extract \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${token}" \\
+  -d '{"urls":["https://example.com"]}'`;
 }
 
 function renderGlobalSummary(services, social) {
