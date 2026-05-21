@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 import database as db
 from key_pool import pool
 from providers import qwen as qwen_provider
+from providers import qwen_mcp as qwen_mcp_gateway
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin")
 ADMIN_SESSION_COOKIE = os.environ.get("ADMIN_SESSION_COOKIE", "mysearch_proxy_session")
@@ -1937,6 +1938,121 @@ async def proxy_qwen_search(request: Request):
         pool.report_result("qwen", key_info["id"], False)
         db.log_usage(token_row["id"], key_info["id"], "search", 0, latency, service="qwen")
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/qwen/mcp")
+async def proxy_qwen_mcp(request: Request):
+    """Streamable-HTTP MCP gateway，把 MySearch Proxy 暴露成标准 MCP server。
+
+    业务侧用 ``Authorization: Bearer mysp-xxx`` 接入，本端点：
+    - initialize / notifications/initialized / tools/list 在本地直接应答（零上游消耗）
+    - tools/call(bailian_web_search) 透传到 DashScope WebSearch MCP，自动从 qwen 池
+      取 key 注入，按 service=qwen 记账与失败计数
+
+    跟 ``/qwen/search`` 相比，本端点遵循 MCP JSON-RPC 协议，可被 Claude Code /
+    Cursor 等原生 MCP 客户端通过 ``claude mcp add --transport http`` 直接接入。
+    """
+    raw_body, body_json = await parse_json_body(request)
+    if not isinstance(body_json, dict):
+        # 通知（jsonrpc notification 没有 id）也可能 body 有效但无 id；统一交给后续逻辑处理
+        body_json = {} if body_json is None else {}
+
+    method = body_json.get("method") or ""
+    req_id = body_json.get("id")
+    is_notification = req_id is None
+
+    # 鉴权：所有 MCP RPC 都要求带 mysp- token；通知也鉴权，避免被恶意触发记账。
+    token_value = extract_token(request, body_json)
+    token_row = get_token_row_or_401(token_value, "qwen")
+
+    # 1) initialize —— 本地伪造，返回网关自身 server info
+    if method == "initialize":
+        return JSONResponse(
+            content=qwen_mcp_gateway.jsonrpc_result(
+                req_id, qwen_mcp_gateway.build_initialize_result()
+            ),
+            headers={"X-Provider": "qwen-mcp-gateway"},
+        )
+
+    # 2) notifications/initialized 等 notification —— 直接 202
+    if is_notification:
+        return Response(status_code=202)
+
+    # 3) tools/list —— 本地固化 schema，零上游消耗
+    if method == "tools/list":
+        return JSONResponse(
+            content=qwen_mcp_gateway.jsonrpc_result(
+                req_id, qwen_mcp_gateway.build_tools_list_result()
+            ),
+            headers={"X-Provider": "qwen-mcp-gateway"},
+        )
+
+    # 4) tools/call —— 真正透传到百炼
+    if method == "tools/call":
+        params = body_json.get("params") or {}
+        tool_name = (params.get("name") or "").strip()
+        if tool_name != qwen_mcp_gateway.BAILIAN_WEB_SEARCH_TOOL["name"]:
+            return JSONResponse(
+                status_code=200,
+                content=qwen_mcp_gateway.jsonrpc_error(
+                    req_id, -32601, f"Unknown tool: {tool_name}"
+                ),
+            )
+
+        key_info = pool.get_next_key("qwen")
+        if not key_info:
+            raise HTTPException(status_code=503, detail="No available API keys")
+
+        start = time.time()
+        try:
+            # 透传整个 JSON-RPC 请求体到百炼（method/params/id/jsonrpc 一起带过去）
+            resp, _elapsed = await qwen_mcp_gateway.call_dashscope_mcp(
+                http_client,
+                key=key_info["key"],
+                payload=body_json,
+                base_url=QWEN_API_BASE,
+            )
+            latency = int((time.time() - start) * 1000)
+            success = resp.status_code < 400
+            pool.report_result("qwen", key_info["id"], success)
+            db.log_usage(
+                token_row["id"],
+                key_info["id"],
+                "mcp",
+                int(success),
+                latency,
+                service="qwen",
+            )
+
+            # 百炼正常返回 application/json，直接以 JSON 转发；其它情况尽量保留原状
+            content_type = resp.headers.get("content-type", "").lower()
+            if "application/json" in content_type:
+                return JSONResponse(
+                    content=resp.json(),
+                    status_code=resp.status_code,
+                    headers={"X-Provider": "qwen-mcp-gateway"},
+                )
+            return forward_raw_response(resp)
+        except Exception as exc:
+            latency = int((time.time() - start) * 1000)
+            pool.report_result("qwen", key_info["id"], False)
+            db.log_usage(
+                token_row["id"], key_info["id"], "mcp", 0, latency, service="qwen"
+            )
+            return JSONResponse(
+                status_code=200,
+                content=qwen_mcp_gateway.jsonrpc_error(
+                    req_id, -32603, f"Upstream error: {exc}"
+                ),
+            )
+
+    # 未识别的 method：返回标准 JSON-RPC method-not-found，便于客户端排查
+    return JSONResponse(
+        status_code=200,
+        content=qwen_mcp_gateway.jsonrpc_error(
+            req_id, -32601, f"Method not supported by gateway: {method}"
+        ),
+    )
 
 
 # ═══ Social / X 代理端点 ═══

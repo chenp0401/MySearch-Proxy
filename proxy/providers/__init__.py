@@ -6,5 +6,6 @@
 """
 
 from . import qwen as qwen
+from . import qwen_mcp as qwen_mcp
 
-__all__ = ["qwen"]
+__all__ = ["qwen", "qwen_mcp"]
