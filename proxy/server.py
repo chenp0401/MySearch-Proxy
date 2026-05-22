@@ -30,6 +30,45 @@ EXA_API_BASE = "https://api.exa.ai"
 QWEN_API_BASE = os.environ.get("QWEN_API_BASE", qwen_provider.QWEN_API_BASE).rstrip("/")
 QWEN_FALLBACK_ENABLED = os.environ.get("QWEN_FALLBACK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
+# --- SearXNG fallback（/search 兜底链最末一环）---------------------------------
+# 设置后，当 Tavily 池空、Qwen 也失败时，/search 自动调用本地 SearXNG 实例。
+# 留空则禁用此层。东京 LH 同机部署时建议设置为 http://172.17.0.1:8080 走 docker 网关。
+SEARXNG_BASE_URL = os.environ.get("SEARXNG_BASE_URL", "").strip().rstrip("/")
+SEARXNG_FALLBACK_ENABLED = bool(SEARXNG_BASE_URL)
+try:
+    SEARXNG_TIMEOUT_SECONDS = max(1, int(os.environ.get("SEARXNG_TIMEOUT_SECONDS", "15")))
+except (TypeError, ValueError):
+    SEARXNG_TIMEOUT_SECONDS = 15
+
+# --- 本地 extract fallback（/extract 兜底）----------------------------------------
+# 当 Tavily 池空时，/extract 用 httpx + markdownify 在本地拽页 → 输出 Tavily 兼容 schema。
+# 走必要逻辑轻（纯 HTTP），不做反反爬；需要反爬请在上层在 OpenClaw 里挂 scrapling MCP。
+# 默认启用；SCRAPLING_FALLBACK_ENABLED 作为别名保留反向兼容。
+LOCAL_EXTRACT_FALLBACK_ENABLED = os.environ.get(
+    "LOCAL_EXTRACT_FALLBACK_ENABLED",
+    os.environ.get("SCRAPLING_FALLBACK_ENABLED", "true"),
+).strip().lower() in {"1", "true", "yes", "on"}
+try:
+    LOCAL_EXTRACT_TIMEOUT_SECONDS = max(
+        5,
+        int(os.environ.get(
+            "LOCAL_EXTRACT_TIMEOUT_SECONDS",
+            os.environ.get("SCRAPLING_TIMEOUT_SECONDS", "30"),
+        )),
+    )
+except (TypeError, ValueError):
+    LOCAL_EXTRACT_TIMEOUT_SECONDS = 30
+try:
+    LOCAL_EXTRACT_MAX_URLS = max(
+        1,
+        int(os.environ.get(
+            "LOCAL_EXTRACT_MAX_URLS",
+            os.environ.get("SCRAPLING_MAX_URLS", "5"),
+        )),
+    )
+except (TypeError, ValueError):
+    LOCAL_EXTRACT_MAX_URLS = 5
+
 
 def _normalize_path(value, default):
     normalized = (value or "").strip() or default
@@ -1675,17 +1714,211 @@ async def healthz():
 
 # ═══ Tavily 代理端点 ═══
 
+async def _execute_searxng_fallback(token_row, body):
+    """Tavily + Qwen 双双失败时的 /search 末端兜底。
+
+    调用本地 SearXNG 实例，将其 JSON 输出翻译成 Tavily schema，并加
+    ``X-Provider: searxng`` 响应头。SearXNG 完全免费、自托管，是流量耗尽场景的最后保险。
+    若未配置 ``SEARXNG_BASE_URL`` 则直接 503。
+    """
+    if not SEARXNG_FALLBACK_ENABLED:
+        raise HTTPException(status_code=503, detail="all providers exhausted")
+
+    query = ((body or {}).get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        max_results = int((body or {}).get("max_results") or 10)
+    except (TypeError, ValueError):
+        max_results = 10
+    max_results = max(1, min(max_results, 30))
+
+    start = time.time()
+    try:
+        resp = await http_client.get(
+            f"{SEARXNG_BASE_URL}/search",
+            params={"q": query, "format": "json", "safesearch": 0},
+            timeout=SEARXNG_TIMEOUT_SECONDS,
+        )
+        elapsed = time.time() - start
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"searxng status {resp.status_code}")
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"invalid searxng response: {exc}")
+
+        raw_results = payload.get("results") or []
+        results: list[dict] = []
+        for item in raw_results[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            url = (item.get("url") or "").strip()
+            if not url:
+                continue
+            results.append(
+                {
+                    "title": (item.get("title") or "").strip(),
+                    "url": url,
+                    "content": (item.get("content") or "").strip(),
+                    "score": item.get("score") if isinstance(item.get("score"), (int, float)) else None,
+                }
+            )
+
+        # SearXNG 的 infoboxes[0].content 偶尔可作为 answer
+        answer = ""
+        infoboxes = payload.get("infoboxes") or []
+        if isinstance(infoboxes, list) and infoboxes:
+            first = infoboxes[0]
+            if isinstance(first, dict):
+                answer = (first.get("content") or "").strip()
+
+        translated = {
+            "query": query,
+            "answer": answer,
+            "results": results,
+            "response_time": float(elapsed),
+        }
+
+        latency = int(elapsed * 1000)
+        # SearXNG 没有 key_pool 概念，key_id 传 None
+        db.log_usage(token_row["id"], None, "search", 1, latency, service="searxng")
+        return JSONResponse(
+            content=translated,
+            status_code=200,
+            headers={"X-Provider": "searxng"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        latency = int((time.time() - start) * 1000)
+        db.log_usage(token_row["id"], None, "search", 0, latency, service="searxng")
+        raise HTTPException(status_code=502, detail=f"searxng failed: {exc}")
+
+
+def _build_tavily_extract_item(url: str, raw_text: str) -> dict:
+    """把拽到的纯文本/markdown 包装成 Tavily extract 单条结果。"""
+    return {
+        "url": url,
+        "raw_content": raw_text or "",
+    }
+
+
+async def _run_local_http_extract(url: str) -> str:
+    """用 httpx 拉页 + markdownify 转 markdown，返回提取后的文本。
+
+    为保证轻依赖（不引入 scrapling/playwright），只走 HTTP fetch + HTML→Markdown。
+    如果未安装 markdownify，则回退为去标签纯文本。
+    """
+    headers = {
+        # 走主流 UA，最大化返回成功率
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    resp = await http_client.get(
+        url,
+        headers=headers,
+        timeout=LOCAL_EXTRACT_TIMEOUT_SECONDS,
+        follow_redirects=True,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"http {resp.status_code}")
+    html = resp.text or ""
+    if not html.strip():
+        return ""
+
+    # 优先 markdownify；不可用时用简易 HTML 去标签。
+    try:
+        from markdownify import markdownify as _md  # type: ignore
+        return _md(html, heading_style="ATX", strip=["script", "style"]).strip()
+    except Exception:
+        cleaned = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<style[\s\S]*?</style>", " ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned.strip()
+
+
+async def _execute_local_extract_fallback(token_row, body):
+    """Tavily extract 池空时的兜底：httpx 拉页 → Tavily 兼容 schema。
+
+    Tavily extract 请求格式： {"urls": ["https://..."]} 或 {"urls": "..."}。
+    返回 ``X-Provider: local-extract`` 头。每个 URL 独立抓取，单 URL 失败放进 ``failed_results``。
+    需要反反爬场景请在 OpenClaw 中挂 scrapling MCP，不走本层。
+    """
+    if not LOCAL_EXTRACT_FALLBACK_ENABLED:
+        raise HTTPException(status_code=503, detail="extract not supported by fallback providers")
+
+    raw_urls = (body or {}).get("urls")
+    if isinstance(raw_urls, str):
+        urls = [raw_urls]
+    elif isinstance(raw_urls, list):
+        urls = [u for u in raw_urls if isinstance(u, str) and u.strip()]
+    else:
+        urls = []
+    if not urls:
+        raise HTTPException(status_code=400, detail="urls is required")
+    urls = urls[:LOCAL_EXTRACT_MAX_URLS]
+
+    start = time.time()
+    results: list[dict] = []
+    failed: list[dict] = []
+
+    async def _one(u: str):
+        try:
+            text = await _run_local_http_extract(u)
+            return ("ok", u, text)
+        except Exception as exc:
+            return ("err", u, str(exc))
+
+    outcomes = await asyncio.gather(*[_one(u) for u in urls], return_exceptions=False)
+    for status, url, payload in outcomes:
+        if status == "ok":
+            results.append(_build_tavily_extract_item(url, payload))
+        else:
+            failed.append({"url": url, "error": payload})
+
+    elapsed = time.time() - start
+    response = {
+        "results": results,
+        "failed_results": failed,
+        "response_time": float(elapsed),
+    }
+    latency = int(elapsed * 1000)
+    success = bool(results)
+    db.log_usage(token_row["id"], None, "extract", int(success), latency, service="local-extract")
+
+    if not results:
+        # 全部失败 → 502，让上游知道
+        raise HTTPException(status_code=502, detail={"failed_results": failed})
+
+    return JSONResponse(
+        content=response,
+        status_code=200,
+        headers={"X-Provider": "local-extract"},
+    )
+
+
 async def _execute_qwen_fallback(token_row, body):
     """Tavily 池空时尝试走 Qwen / DashScope 备援。
 
     返回 ``JSONResponse``（含 ``X-Provider: qwen`` 头）或抛 ``HTTPException``。
+    Qwen 也失败时，若启用了 SearXNG 则再回落一层；都不可用才 503。
     本函数不会再回退到 tavily（调用方已确认 tavily 池为空）。
     """
     if not QWEN_FALLBACK_ENABLED:
+        if SEARXNG_FALLBACK_ENABLED:
+            return await _execute_searxng_fallback(token_row, body)
         raise HTTPException(status_code=503, detail="No available API keys")
 
     qwen_key_info = pool.get_next_key("qwen")
     if not qwen_key_info:
+        if SEARXNG_FALLBACK_ENABLED:
+            return await _execute_searxng_fallback(token_row, body)
         raise HTTPException(status_code=503, detail="all providers exhausted")
 
     try:
@@ -1717,6 +1950,12 @@ async def _execute_qwen_fallback(token_row, body):
                 detail = resp.json()
             except Exception:
                 detail = {"error": resp.text[:300]}
+            # Qwen 调用失败：有 SearXNG 则再冲一次，避免全链路断
+            if SEARXNG_FALLBACK_ENABLED:
+                try:
+                    return await _execute_searxng_fallback(token_row, body)
+                except HTTPException:
+                    pass
             raise HTTPException(status_code=502, detail=detail)
 
         try:
@@ -1747,6 +1986,12 @@ async def _execute_qwen_fallback(token_row, body):
             latency,
             service="qwen",
         )
+        # Qwen 意外异常：同样尝试 SearXNG 兑底
+        if SEARXNG_FALLBACK_ENABLED:
+            try:
+                return await _execute_searxng_fallback(token_row, body)
+            except HTTPException:
+                pass
         raise HTTPException(status_code=502, detail=str(exc))
 
 
@@ -1767,9 +2012,11 @@ async def proxy_tavily(request: Request):
     if not key_info:
         if endpoint == "search":
             return await _execute_qwen_fallback(token_row, body)
+        if endpoint == "extract":
+            return await _execute_local_extract_fallback(token_row, body)
         raise HTTPException(
             status_code=503,
-            detail="extract not supported by fallback providers",
+            detail="endpoint not supported by fallback providers",
         )
 
     body["api_key"] = key_info["key"]

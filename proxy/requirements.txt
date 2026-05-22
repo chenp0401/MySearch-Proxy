@@ -2,3 +2,5 @@ fastapi>=0.104.0
 uvicorn>=0.24.0
 httpx>=0.25.0
 jinja2>=3.1.0
+# /extract 链兜底：本地 httpx 拉页 → markdown，纯 Python 轻量库
+markdownify>=0.11.6
