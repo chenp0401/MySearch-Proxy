@@ -39,6 +39,20 @@ try:
     SEARXNG_TIMEOUT_SECONDS = max(1, int(os.environ.get("SEARXNG_TIMEOUT_SECONDS", "15")))
 except (TypeError, ValueError):
     SEARXNG_TIMEOUT_SECONDS = 15
+# 可选：限定调用 SearXNG 时使用的引擎清单（逗号分隔），降低被失败引擎拖累的概率。
+# 留空则用 SearXNG settings.yml 里的默认 enabled 集。东京 LH 实测稳定的：
+#   bing,mojeek,yandex,baidu,sogou,wikipedia
+SEARXNG_ENGINES = ",".join(
+    e.strip()
+    for e in (os.environ.get("SEARXNG_ENGINES", "") or "").split(",")
+    if e.strip()
+)
+# 可选：categories 参数（逗号分隔），默认 general 避免被默认带的 images/videos 拖累。
+SEARXNG_CATEGORIES = ",".join(
+    c.strip()
+    for c in (os.environ.get("SEARXNG_CATEGORIES", "general") or "general").split(",")
+    if c.strip()
+) or "general"
 
 # --- 本地 extract fallback（/extract 兜底）----------------------------------------
 # 当 Tavily 池空时，/extract 用 httpx + markdownify 在本地拽页 → 输出 Tavily 兼容 schema。
@@ -1720,6 +1734,11 @@ async def _execute_searxng_fallback(token_row, body):
     调用本地 SearXNG 实例，将其 JSON 输出翻译成 Tavily schema，并加
     ``X-Provider: searxng`` 响应头。SearXNG 完全免费、自托管，是流量耗尽场景的最后保险。
     若未配置 ``SEARXNG_BASE_URL`` 则直接 503。
+
+    优化策略（应对公网 IP 被反爬限流的现实）：
+      1. 默认带 ``categories=general``，避免拉上 images/videos 等高失败率类别
+      2. 若配置了 ``SEARXNG_ENGINES``，第一次只打稳定引擎子集
+      3. 第一次结果空时，去掉 engines 限定再试一次，给临时被限流的引擎让位
     """
     if not SEARXNG_FALLBACK_ENABLED:
         raise HTTPException(status_code=503, detail="all providers exhausted")
@@ -1733,13 +1752,56 @@ async def _execute_searxng_fallback(token_row, body):
         max_results = 10
     max_results = max(1, min(max_results, 30))
 
-    start = time.time()
-    try:
-        resp = await http_client.get(
+    async def _query_searxng(*, with_engines: bool):
+        """单次查询 SearXNG，with_engines 控制是否带显式 engines 限定。"""
+        params = {
+            "q": query,
+            "format": "json",
+            "safesearch": 0,
+            "categories": SEARXNG_CATEGORIES,
+        }
+        if with_engines and SEARXNG_ENGINES:
+            params["engines"] = SEARXNG_ENGINES
+        return await http_client.get(
             f"{SEARXNG_BASE_URL}/search",
-            params={"q": query, "format": "json", "safesearch": 0},
+            params=params,
             timeout=SEARXNG_TIMEOUT_SECONDS,
         )
+
+    def _parse_to_tavily(payload: dict, elapsed: float) -> dict:
+        raw_results = payload.get("results") or []
+        items: list[dict] = []
+        for item in raw_results[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            url = (item.get("url") or "").strip()
+            if not url:
+                continue
+            items.append(
+                {
+                    "title": (item.get("title") or "").strip(),
+                    "url": url,
+                    "content": (item.get("content") or "").strip(),
+                    "score": item.get("score") if isinstance(item.get("score"), (int, float)) else None,
+                }
+            )
+        # SearXNG 的 infoboxes[0].content 偶尔可作为 answer
+        ans = ""
+        infoboxes = payload.get("infoboxes") or []
+        if isinstance(infoboxes, list) and infoboxes:
+            first = infoboxes[0]
+            if isinstance(first, dict):
+                ans = (first.get("content") or "").strip()
+        return {
+            "query": query,
+            "answer": ans,
+            "results": items,
+            "response_time": float(elapsed),
+        }
+
+    start = time.time()
+    try:
+        resp = await _query_searxng(with_engines=True)
         elapsed = time.time() - start
         if resp.status_code != 200:
             raise HTTPException(status_code=502, detail=f"searxng status {resp.status_code}")
@@ -1748,39 +1810,23 @@ async def _execute_searxng_fallback(token_row, body):
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"invalid searxng response: {exc}")
 
-        raw_results = payload.get("results") or []
-        results: list[dict] = []
-        for item in raw_results[:max_results]:
-            if not isinstance(item, dict):
-                continue
-            url = (item.get("url") or "").strip()
-            if not url:
-                continue
-            results.append(
-                {
-                    "title": (item.get("title") or "").strip(),
-                    "url": url,
-                    "content": (item.get("content") or "").strip(),
-                    "score": item.get("score") if isinstance(item.get("score"), (int, float)) else None,
-                }
-            )
+        translated = _parse_to_tavily(payload, elapsed)
 
-        # SearXNG 的 infoboxes[0].content 偶尔可作为 answer
-        answer = ""
-        infoboxes = payload.get("infoboxes") or []
-        if isinstance(infoboxes, list) and infoboxes:
-            first = infoboxes[0]
-            if isinstance(first, dict):
-                answer = (first.get("content") or "").strip()
+        # 第一次空结果且我们带了 engines 限定 → 做一次不限定 engines 的重试，
+        # 让 SearXNG 自己在所有 enabled 引擎里选可用的（被限流的会自动被跳过）
+        if not translated["results"] and SEARXNG_ENGINES:
+            try:
+                resp2 = await _query_searxng(with_engines=False)
+                if resp2.status_code == 200:
+                    payload2 = resp2.json()
+                    elapsed = time.time() - start
+                    retry_translated = _parse_to_tavily(payload2, elapsed)
+                    if retry_translated["results"]:
+                        translated = retry_translated
+            except Exception:
+                pass  # 重试失败不阻断主流程，沿用第一次的空结果
 
-        translated = {
-            "query": query,
-            "answer": answer,
-            "results": results,
-            "response_time": float(elapsed),
-        }
-
-        latency = int(elapsed * 1000)
+        latency = int((time.time() - start) * 1000)
         # SearXNG 没有 key_pool 概念，key_id 传 None
         db.log_usage(token_row["id"], None, "search", 1, latency, service="searxng")
         return JSONResponse(
