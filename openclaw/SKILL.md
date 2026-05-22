@@ -35,8 +35,13 @@ metadata:
       env:
         - MYSEARCH_PROXY_BASE_URL
         - MYSEARCH_PROXY_API_KEY
+      optionalEnv:
         - MYSEARCH_TAVILY_API_KEY
         - MYSEARCH_FIRECRAWL_API_KEY
+        - MYSEARCH_XAI_API_KEY
+        - MYSEARCH_XAI_BASE_URL
+        - MYSEARCH_XAI_SOCIAL_BASE_URL
+        - MYSEARCH_XAI_SEARCH_MODE
     primaryEnv: MYSEARCH_PROXY_API_KEY
     tags:
       - search
