@@ -11,6 +11,10 @@ from datetime import datetime, timezone
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "proxy.db")
 SUPPORTED_SERVICES = ("tavily", "firecrawl", "exa", "qwen")
 TOKEN_SERVICES = SUPPORTED_SERVICES + ("mysearch",)
+# 兜底/降级路径产生的统计标识，仅用于 usage_logs 写入与按服务分类查询，
+# 不参与 KeyPool / Token 体系。
+LOG_ONLY_SERVICES = ("searxng", "local-extract")
+LOG_SERVICES = SUPPORTED_SERVICES + LOG_ONLY_SERVICES
 TOKEN_PREFIX = {
     "tavily": "tvly-",
     "firecrawl": "fctk-",
@@ -42,6 +46,15 @@ def normalize_service(service):
     service = (service or "tavily").strip().lower()
     if service not in SUPPORTED_SERVICES:
         raise ValueError(f"unsupported service: {service}")
+    return service
+
+
+def normalize_log_service(service):
+    """log_usage 专用：除了 SUPPORTED_SERVICES，还容许兜底路径的 service 标识
+    （例如 searxng、local-extract），保证降级流程不会因写日志失败而抛异常。"""
+    service = (service or "tavily").strip().lower()
+    if service not in LOG_SERVICES:
+        raise ValueError(f"unsupported log service: {service}")
     return service
 
 
@@ -388,7 +401,7 @@ def delete_token(token_id):
 # ═══ Usage Logs ═══
 
 def log_usage(token_id, api_key_id, endpoint, success, latency_ms, service="tavily"):
-    service = normalize_service(service)
+    service = normalize_log_service(service)
     conn = get_conn()
     try:
         conn.execute(
